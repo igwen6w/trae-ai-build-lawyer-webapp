@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Search,
   Filter,
   MoreHorizontal,
   Eye,
+  Edit,
   CheckCircle,
   XCircle,
   Clock,
@@ -15,10 +17,15 @@ import {
   Phone,
   MapPin,
   DollarSign,
+  TrendingUp,
+  Plus,
   MessageSquare,
-  TrendingUp
 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import LawyerModal from '../../components/admin/LawyerModal';
+import AddLawyerModal from '../../components/admin/AddLawyerModal';
+import EditLawyerModal from '../../components/admin/EditLawyerModal';
+import StatsModal from '../../components/admin/StatsModal';
 
 interface Lawyer {
   id: string;
@@ -48,6 +55,7 @@ interface LawyerStats {
 }
 
 const LawyerManagement: React.FC = () => {
+  const navigate = useNavigate();
   const [lawyers, setLawyers] = useState<Lawyer[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -58,10 +66,65 @@ const LawyerManagement: React.FC = () => {
   const [selectedLawyer, setSelectedLawyer] = useState<Lawyer | null>(null);
   const [showLawyerModal, setShowLawyerModal] = useState(false);
   const [showStatsModal, setShowStatsModal] = useState(false);
+  const [showAddLawyerModal, setShowAddLawyerModal] = useState(false);
+  const [showEditLawyerModal, setShowEditLawyerModal] = useState(false);
+  const [editingLawyer, setEditingLawyer] = useState<Lawyer | null>(null);
   const [lawyerStats, setLawyerStats] = useState<LawyerStats[]>([]);
 
+  // 检查token是否有效
+  const checkTokenValidity = () => {
+    const token = localStorage.getItem('adminToken');
+    const adminUser = localStorage.getItem('adminUser');
+    
+    if (!token || !adminUser) {
+      console.log('No token or admin user found, redirecting to login');
+      localStorage.removeItem('adminToken');
+      localStorage.removeItem('adminUser');
+      navigate('/admin/login');
+      return false;
+    }
+    
+    try {
+      // 简单的JWT token过期检查
+      const tokenParts = token.split('.');
+      if (tokenParts.length !== 3) {
+        throw new Error('Invalid token format');
+      }
+      
+      const payload = JSON.parse(atob(tokenParts[1]));
+      const currentTime = Math.floor(Date.now() / 1000);
+      
+      if (payload.exp && payload.exp < currentTime) {
+        console.log('Token expired, redirecting to login');
+        localStorage.removeItem('adminToken');
+        localStorage.removeItem('adminUser');
+        navigate('/admin/login');
+        return false;
+      }
+      
+      return true;
+    } catch (error) {
+      console.error('Token validation error:', error);
+      localStorage.removeItem('adminToken');
+      localStorage.removeItem('adminUser');
+      navigate('/admin/login');
+      return false;
+    }
+  };
+
+  // 处理401错误的统一函数
+  const handleUnauthorized = () => {
+    console.log('Unauthorized access, redirecting to login');
+    localStorage.removeItem('adminToken');
+    localStorage.removeItem('adminUser');
+    navigate('/admin/login');
+  };
+
   useEffect(() => {
-    fetchLawyers();
+    // 页面加载时检查登录状态
+    if (checkTokenValidity()) {
+      fetchLawyers();
+    }
   }, [currentPage, searchTerm, statusFilter, specialtyFilter]);
 
   const fetchLawyers = async () => {
@@ -92,6 +155,11 @@ const LawyerManagement: React.FC = () => {
         setLawyers(data.data?.lawyers || []);
         setTotalPages(Math.ceil((data.data?.pagination?.total || 0) / 10));
         return; // 成功获取数据，直接返回
+      } else if (response.status === 401) {
+        // 处理401未授权错误
+        console.error('Unauthorized access - token invalid or expired');
+        handleUnauthorized();
+        return;
       } else {
         console.error('API request failed with status:', response.status);
         throw new Error(`API request failed with status: ${response.status}`);
@@ -189,6 +257,12 @@ const LawyerManagement: React.FC = () => {
             approvedAt: newStatus === 'approved' ? new Date().toISOString() : lawyer.approvedAt
           } : lawyer
         ));
+      } else if (response.status === 401) {
+        console.error('Unauthorized access when updating lawyer status');
+        handleUnauthorized();
+        return;
+      } else {
+        console.error('Failed to update lawyer status, status:', response.status);
       }
     } catch (error) {
       console.error('Failed to update lawyer status:', error);
@@ -444,6 +518,310 @@ const LawyerManagement: React.FC = () => {
     </div>
   );
 
+  const AddLawyerModal: React.FC<{ onClose: () => void; onSuccess: () => void }> = ({ onClose, onSuccess }) => {
+    const [formData, setFormData] = useState({
+      name: '',
+      email: '',
+      phone: '',
+      specialties: [] as string[],
+      experience: 0,
+      education: '',
+      licenseNumber: '',
+      location: '',
+      bio: ''
+    });
+    const [errors, setErrors] = useState<Record<string, string>>({});
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    const [selectedSpecialties, setSelectedSpecialties] = useState<string[]>([]);
+
+    const availableSpecialties = [
+      '民事诉讼', '刑事辩护', '合同纠纷', '知识产权', '经济犯罪',
+      '劳动争议', '婚姻家庭', '房产纠纷', '公司法务', '税务法律'
+    ];
+
+    const validateForm = () => {
+      const newErrors: Record<string, string> = {};
+
+      if (!formData.name.trim()) {
+        newErrors.name = '请输入律师姓名';
+      }
+
+      if (!formData.email.trim()) {
+        newErrors.email = '请输入邮箱地址';
+      } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
+        newErrors.email = '请输入有效的邮箱地址';
+      }
+
+      if (!formData.phone.trim()) {
+        newErrors.phone = '请输入手机号码';
+      } else if (!/^1[3-9]\d{9}$/.test(formData.phone)) {
+        newErrors.phone = '请输入有效的手机号码';
+      }
+
+      if (selectedSpecialties.length === 0) {
+        newErrors.specialties = '请至少选择一个专业领域';
+      }
+
+      if (!formData.experience || formData.experience < 0) {
+        newErrors.experience = '请输入有效的执业年限';
+      }
+
+      if (!formData.education.trim()) {
+        newErrors.education = '请输入教育背景';
+      }
+
+      if (!formData.licenseNumber.trim()) {
+        newErrors.licenseNumber = '请输入执业证号';
+      }
+
+      if (!formData.location.trim()) {
+        newErrors.location = '请输入执业地区';
+      }
+
+      setErrors(newErrors);
+      return Object.keys(newErrors).length === 0;
+    };
+
+    const handleSubmit = async (e: React.FormEvent) => {
+      e.preventDefault();
+      
+      if (!validateForm()) {
+        return;
+      }
+
+      setIsSubmitting(true);
+      
+      try {
+        const token = localStorage.getItem('adminToken');
+        const response = await fetch('http://localhost:3001/api/admin/lawyers', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            ...formData,
+            specialties: selectedSpecialties
+          })
+        });
+
+        if (response.ok) {
+          onSuccess();
+          // 显示成功提示
+          alert('律师添加成功！');
+        } else if (response.status === 401) {
+          console.error('Unauthorized access when creating lawyer');
+          handleUnauthorized();
+          return;
+        } else {
+          const errorData = await response.json();
+          alert(`添加失败: ${errorData.message || '未知错误'}`);
+        }
+      } catch (error) {
+        console.error('Failed to create lawyer:', error);
+        alert('添加失败，请检查网络连接');
+      } finally {
+        setIsSubmitting(false);
+      }
+    };
+
+    const handleSpecialtyToggle = (specialty: string) => {
+      setSelectedSpecialties(prev => 
+        prev.includes(specialty)
+          ? prev.filter(s => s !== specialty)
+          : [...prev, specialty]
+      );
+    };
+
+    return (
+      <div className="fixed inset-0 z-50 overflow-y-auto">
+        <div className="flex items-center justify-center min-h-screen px-4">
+          <div className="fixed inset-0 bg-black bg-opacity-50" onClick={onClose} />
+          <div className="relative bg-white rounded-lg max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-lg font-semibold text-gray-900">添加新律师</h3>
+              <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+                <XCircle className="h-6 w-6" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmit} className="space-y-4">
+              {/* 基本信息 */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    律师姓名 <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.name}
+                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                      errors.name ? 'border-red-500' : 'border-gray-300'
+                    }`}
+                    placeholder="请输入律师姓名"
+                  />
+                  {errors.name && <p className="text-red-500 text-xs mt-1">{errors.name}</p>}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    邮箱地址 <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="email"
+                    value={formData.email}
+                    onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                    className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                      errors.email ? 'border-red-500' : 'border-gray-300'
+                    }`}
+                    placeholder="请输入邮箱地址"
+                  />
+                  {errors.email && <p className="text-red-500 text-xs mt-1">{errors.email}</p>}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    手机号码 <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="tel"
+                    value={formData.phone}
+                    onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                    className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                      errors.phone ? 'border-red-500' : 'border-gray-300'
+                    }`}
+                    placeholder="请输入手机号码"
+                  />
+                  {errors.phone && <p className="text-red-500 text-xs mt-1">{errors.phone}</p>}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    执业年限 <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="50"
+                    value={formData.experience}
+                    onChange={(e) => setFormData({ ...formData, experience: parseInt(e.target.value) || 0 })}
+                    className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                      errors.experience ? 'border-red-500' : 'border-gray-300'
+                    }`}
+                    placeholder="请输入执业年限"
+                  />
+                  {errors.experience && <p className="text-red-500 text-xs mt-1">{errors.experience}</p>}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    教育背景 <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.education}
+                    onChange={(e) => setFormData({ ...formData, education: e.target.value })}
+                    className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                      errors.education ? 'border-red-500' : 'border-gray-300'
+                    }`}
+                    placeholder="如：北京大学法学院"
+                  />
+                  {errors.education && <p className="text-red-500 text-xs mt-1">{errors.education}</p>}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    执业证号 <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.licenseNumber}
+                    onChange={(e) => setFormData({ ...formData, licenseNumber: e.target.value })}
+                    className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                      errors.licenseNumber ? 'border-red-500' : 'border-gray-300'
+                    }`}
+                    placeholder="请输入执业证号"
+                  />
+                  {errors.licenseNumber && <p className="text-red-500 text-xs mt-1">{errors.licenseNumber}</p>}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  执业地区 <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={formData.location}
+                  onChange={(e) => setFormData({ ...formData, location: e.target.value })}
+                  className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                    errors.location ? 'border-red-500' : 'border-gray-300'
+                  }`}
+                  placeholder="如：北京市、上海市"
+                />
+                {errors.location && <p className="text-red-500 text-xs mt-1">{errors.location}</p>}
+              </div>
+
+              {/* 专业领域 */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  专业领域 <span className="text-red-500">*</span>
+                </label>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                  {availableSpecialties.map((specialty) => (
+                    <label key={specialty} className="flex items-center space-x-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={selectedSpecialties.includes(specialty)}
+                        onChange={() => handleSpecialtyToggle(specialty)}
+                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <span className="text-sm text-gray-700">{specialty}</span>
+                    </label>
+                  ))}
+                </div>
+                {errors.specialties && <p className="text-red-500 text-xs mt-1">{errors.specialties}</p>}
+              </div>
+
+              {/* 个人简介 */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  个人简介
+                </label>
+                <textarea
+                  value={formData.bio}
+                  onChange={(e) => setFormData({ ...formData, bio: e.target.value })}
+                  rows={3}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="请简要介绍律师的专业背景和经验..."
+                />
+              </div>
+
+              {/* 提交按钮 */}
+              <div className="flex justify-end space-x-3 pt-4">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50"
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isSubmitting ? '添加中...' : '添加律师'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const StatsModal: React.FC<{ onClose: () => void }> = ({ onClose }) => (
     <div className="fixed inset-0 z-50 overflow-y-auto">
       <div className="flex items-center justify-center min-h-screen px-4">
@@ -516,13 +894,22 @@ const LawyerManagement: React.FC = () => {
           <h1 className="text-2xl font-bold text-gray-900">律师管理</h1>
           <p className="text-gray-600 mt-1">管理律师申请、审核和业绩</p>
         </div>
-        <button
-          onClick={() => setShowStatsModal(true)}
-          className="flex items-center space-x-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
-        >
-          <TrendingUp className="h-4 w-4" />
-          <span>业绩统计</span>
-        </button>
+        <div className="flex items-center space-x-3">
+          <button
+            onClick={() => setShowAddLawyerModal(true)}
+            className="flex items-center space-x-2 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors"
+          >
+            <Plus className="h-4 w-4" />
+            <span>添加律师</span>
+          </button>
+          <button
+            onClick={() => setShowStatsModal(true)}
+            className="flex items-center space-x-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            <TrendingUp className="h-4 w-4" />
+            <span>业绩统计</span>
+          </button>
+        </div>
       </div>
 
       {/* Filters */}
@@ -666,8 +1053,19 @@ const LawyerManagement: React.FC = () => {
                           setShowLawyerModal(true);
                         }}
                         className="text-blue-600 hover:text-blue-900"
+                        title="查看详情"
                       >
                         <Eye className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => {
+                          setEditingLawyer(lawyer);
+                          setShowEditLawyerModal(true);
+                        }}
+                        className="text-green-600 hover:text-green-900"
+                        title="编辑律师"
+                      >
+                        <Edit className="h-4 w-4" />
                       </button>
                       <button className="text-gray-400 hover:text-gray-600">
                         <MoreHorizontal className="h-4 w-4" />
@@ -714,6 +1112,33 @@ const LawyerManagement: React.FC = () => {
           onClose={() => {
             setShowLawyerModal(false);
             setSelectedLawyer(null);
+          }}
+        />
+      )}
+
+      {/* Add Lawyer Modal */}
+      {showAddLawyerModal && (
+        <AddLawyerModal
+          onClose={() => setShowAddLawyerModal(false)}
+          onSuccess={() => {
+            setShowAddLawyerModal(false);
+            fetchLawyers(); // 刷新律师列表
+          }}
+        />
+      )}
+
+      {/* Edit Lawyer Modal */}
+      {showEditLawyerModal && editingLawyer && (
+        <EditLawyerModal
+          lawyer={editingLawyer}
+          onClose={() => {
+            setShowEditLawyerModal(false);
+            setEditingLawyer(null);
+          }}
+          onSuccess={() => {
+            setShowEditLawyerModal(false);
+            setEditingLawyer(null);
+            fetchLawyers(); // 刷新律师列表
           }}
         />
       )}

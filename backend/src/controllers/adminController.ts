@@ -678,3 +678,357 @@ export const getAdminLogs = catchAsync(async (req: AdminRequest, res: Response) 
     }
   });
 });
+
+// Create lawyer
+export const createLawyer = catchAsync(async (req: AdminRequest, res: Response) => {
+  const {
+    name,
+    email,
+    phone,
+    specialties,
+    experience,
+    education,
+    licenseNumber,
+    hourlyRate,
+    bio,
+    languages
+  } = req.body;
+
+  // Check if email already exists
+  const existingUser = await pool.query(
+    'SELECT id FROM users WHERE email = $1',
+    [email]
+  );
+
+  if (existingUser.rows.length > 0) {
+    throw new AppError('该邮箱已被注册', 400);
+  }
+
+  // Check if license number already exists
+  if (licenseNumber) {
+    const existingLicense = await pool.query(
+      'SELECT id FROM lawyers WHERE license_number = $1',
+      [licenseNumber]
+    );
+
+    if (existingLicense.rows.length > 0) {
+      throw new AppError('该执业证号已存在', 400);
+    }
+  }
+
+  // Generate default password and encrypt it
+  const defaultPassword = '123456'; // Default password for new lawyers
+  const hashedPassword = await bcrypt.hash(defaultPassword, 12);
+
+  // Start transaction
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+
+    // Create user account with password
+    const userResult = await client.query(
+      `INSERT INTO users (name, email, phone, password, role, is_active, is_verified, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'lawyer', true, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+       RETURNING id, name, email, phone, role, is_active, is_verified, created_at`,
+      [name, email, phone, hashedPassword]
+    );
+
+    const user = userResult.rows[0];
+
+    // Create lawyer profile
+    const lawyerResult = await client.query(
+      `INSERT INTO lawyers (
+         user_id, specialties, experience, education, license_number, 
+         hourly_rate, bio, languages, rating, review_count, 
+         created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+       RETURNING *`,
+      [
+        user.id,
+        specialties || [],
+        experience || 0,
+        education || '',
+        licenseNumber || '',
+        hourlyRate || 0,
+        bio || '',
+        languages || []
+      ]
+    );
+
+    const lawyer = lawyerResult.rows[0];
+
+    await client.query('COMMIT');
+
+    // Log action
+    await AdminLogModel.create({
+      admin_id: req.admin!.id,
+      action: 'lawyer_create',
+      target_type: 'lawyer',
+      target_id: lawyer.id,
+      details: { 
+        lawyer_name: name,
+        lawyer_email: email,
+        specialties: specialties || [],
+        license_number: licenseNumber || ''
+      },
+      ip_address: req.ip,
+      user_agent: req.get('User-Agent')
+    });
+
+    // Parse JSON fields for response
+    const responseData = {
+      id: lawyer.id,
+      user_id: lawyer.user_id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      specialties: typeof lawyer.specialties === 'string' ? JSON.parse(lawyer.specialties) : lawyer.specialties,
+      experience: lawyer.experience,
+      education: lawyer.education,
+      licenseNumber: lawyer.license_number,
+      hourlyRate: lawyer.hourly_rate,
+      bio: lawyer.bio,
+      languages: typeof lawyer.languages === 'string' ? JSON.parse(lawyer.languages) : lawyer.languages,
+      rating: lawyer.rating,
+      reviewCount: lawyer.review_count,
+      isActive: user.is_active,
+      isVerified: user.is_verified,
+      createdAt: lawyer.created_at
+    };
+
+    res.status(201).json({
+      success: true,
+      message: `律师创建成功，默认密码为：${defaultPassword}，请提醒律师首次登录后修改密码`,
+      data: responseData
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+});
+
+// Update lawyer
+export const updateLawyer = catchAsync(async (req: AdminRequest, res: Response) => {
+  const { id } = req.params;
+  const {
+    name,
+    email,
+    phone,
+    specialties,
+    experience,
+    education,
+    license_number,
+    hourly_rate,
+    bio,
+    languages
+  } = req.body;
+
+  // Check if lawyer exists
+  const existingLawyer = await pool.query(
+    `SELECT l.*, u.name, u.email, u.phone, u.is_active, u.is_verified
+     FROM lawyers l
+     JOIN users u ON l.user_id = u.id
+     WHERE l.id = $1`,
+    [id]
+  );
+
+  if (existingLawyer.rows.length === 0) {
+    throw new AppError('律师不存在', 404);
+  }
+
+  const lawyer = existingLawyer.rows[0];
+
+  // Check if email is being changed and if it already exists
+  if (email && email !== lawyer.email) {
+    const existingUser = await pool.query(
+      'SELECT id FROM users WHERE email = $1 AND id != $2',
+      [email, lawyer.user_id]
+    );
+
+    if (existingUser.rows.length > 0) {
+      throw new AppError('该邮箱已被其他用户使用', 400);
+    }
+  }
+
+  // Check if license number is being changed and if it already exists
+  if (license_number && license_number !== lawyer.license_number) {
+    const existingLicense = await pool.query(
+      'SELECT id FROM lawyers WHERE license_number = $1 AND id != $2',
+      [license_number, id]
+    );
+
+    if (existingLicense.rows.length > 0) {
+      throw new AppError('该执业证号已被其他律师使用', 400);
+    }
+  }
+
+  // Start transaction
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+
+    // Update user information if provided
+    if (name || email || phone) {
+      const userUpdateFields = [];
+      const userUpdateValues = [];
+      let userParamIndex = 1;
+
+      if (name) {
+        userUpdateFields.push(`name = $${userParamIndex}`);
+        userUpdateValues.push(name);
+        userParamIndex++;
+      }
+
+      if (email) {
+        userUpdateFields.push(`email = $${userParamIndex}`);
+        userUpdateValues.push(email);
+        userParamIndex++;
+      }
+
+      if (phone) {
+        userUpdateFields.push(`phone = $${userParamIndex}`);
+        userUpdateValues.push(phone);
+        userParamIndex++;
+      }
+
+      userUpdateFields.push(`updated_at = CURRENT_TIMESTAMP`);
+      userUpdateValues.push(lawyer.user_id);
+
+      const userUpdateQuery = `
+        UPDATE users 
+        SET ${userUpdateFields.join(', ')}
+        WHERE id = $${userParamIndex}
+        RETURNING name, email, phone, is_active, is_verified
+      `;
+
+      await client.query(userUpdateQuery, userUpdateValues);
+    }
+
+    // Update lawyer information if provided
+    const lawyerUpdateFields = [];
+    const lawyerUpdateValues = [];
+    let lawyerParamIndex = 1;
+
+    if (specialties !== undefined) {
+      lawyerUpdateFields.push(`specialties = $${lawyerParamIndex}`);
+      lawyerUpdateValues.push(specialties || []);
+      lawyerParamIndex++;
+    }
+
+    if (experience !== undefined) {
+      lawyerUpdateFields.push(`experience = $${lawyerParamIndex}`);
+      lawyerUpdateValues.push(experience);
+      lawyerParamIndex++;
+    }
+
+    if (education !== undefined) {
+      lawyerUpdateFields.push(`education = $${lawyerParamIndex}`);
+      lawyerUpdateValues.push(education);
+      lawyerParamIndex++;
+    }
+
+    if (license_number !== undefined) {
+      lawyerUpdateFields.push(`license_number = $${lawyerParamIndex}`);
+      lawyerUpdateValues.push(license_number);
+      lawyerParamIndex++;
+    }
+
+    if (hourly_rate !== undefined) {
+      lawyerUpdateFields.push(`hourly_rate = $${lawyerParamIndex}`);
+      lawyerUpdateValues.push(hourly_rate);
+      lawyerParamIndex++;
+    }
+
+    if (bio !== undefined) {
+      lawyerUpdateFields.push(`bio = $${lawyerParamIndex}`);
+      lawyerUpdateValues.push(bio);
+      lawyerParamIndex++;
+    }
+
+    if (languages !== undefined) {
+      lawyerUpdateFields.push(`languages = $${lawyerParamIndex}`);
+      lawyerUpdateValues.push(languages || []);
+      lawyerParamIndex++;
+    }
+
+    if (lawyerUpdateFields.length > 0) {
+      lawyerUpdateFields.push(`updated_at = CURRENT_TIMESTAMP`);
+      lawyerUpdateValues.push(id);
+
+      const lawyerUpdateQuery = `
+        UPDATE lawyers 
+        SET ${lawyerUpdateFields.join(', ')}
+        WHERE id = $${lawyerParamIndex}
+      `;
+
+      await client.query(lawyerUpdateQuery, lawyerUpdateValues);
+    }
+
+    // Get updated lawyer data
+    const updatedLawyer = await client.query(
+      `SELECT l.*, u.name, u.email, u.phone, u.is_active, u.is_verified
+       FROM lawyers l
+       JOIN users u ON l.user_id = u.id
+       WHERE l.id = $1`,
+      [id]
+    );
+
+    await client.query('COMMIT');
+
+    const updatedData = updatedLawyer.rows[0];
+
+    // Log action
+    await AdminLogModel.create({
+      admin_id: req.admin!.id,
+      action: 'lawyer_update',
+      target_type: 'lawyer',
+      target_id: id,
+      details: { 
+        lawyer_name: updatedData.name,
+        lawyer_email: updatedData.email,
+        updated_fields: Object.keys(req.body)
+      },
+      ip_address: req.ip,
+      user_agent: req.get('User-Agent')
+    });
+
+    // Format response data
+    const responseData = {
+      id: updatedData.id,
+      user_id: updatedData.user_id,
+      name: updatedData.name,
+      email: updatedData.email,
+      phone: updatedData.phone,
+      specialties: typeof updatedData.specialties === 'string' ? JSON.parse(updatedData.specialties) : updatedData.specialties,
+      experience: updatedData.experience,
+      education: updatedData.education,
+      licenseNumber: updatedData.license_number,
+      hourlyRate: updatedData.hourly_rate,
+      bio: updatedData.bio,
+      languages: typeof updatedData.languages === 'string' ? JSON.parse(updatedData.languages) : updatedData.languages,
+      rating: updatedData.rating,
+      reviewCount: updatedData.review_count,
+      isActive: updatedData.is_active,
+      isVerified: updatedData.is_verified,
+      createdAt: updatedData.created_at,
+      updatedAt: updatedData.updated_at
+    };
+
+    res.status(200).json({
+      success: true,
+      message: '律师信息更新成功',
+      data: responseData
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+     client.release();
+   }
+ });

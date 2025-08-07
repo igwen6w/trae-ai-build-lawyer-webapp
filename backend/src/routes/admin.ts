@@ -10,6 +10,8 @@ import {
   getLawyers,
   getLawyerDetails,
   updateLawyerStatus,
+  createLawyer,
+  updateLawyer,
   getSystemSettings,
   updateSystemSetting,
   getAdminLogs
@@ -135,6 +137,45 @@ router.patch('/lawyers/:id/status',
   ],
   validateRequest,
   updateLawyerStatus
+);
+
+router.post('/lawyers',
+  adminPermission(['lawyers:write']),
+  logAdminAction,
+  [
+    body('name').isLength({ min: 1, max: 100 }).withMessage('姓名长度必须在1-100字符之间'),
+    body('email').isEmail().withMessage('请输入有效的邮箱地址'),
+    body('phone').optional().isMobilePhone('zh-CN').withMessage('请输入有效的手机号码'),
+    body('specialties').optional().isArray().withMessage('专业领域必须是数组'),
+    body('experience').optional().isInt({ min: 0 }).withMessage('执业年限必须是非负整数'),
+    body('education').optional().isLength({ max: 500 }).withMessage('教育背景不能超过500字符'),
+    body('licenseNumber').optional().isLength({ max: 50 }).withMessage('执业证号不能超过50字符'),
+    body('hourlyRate').optional().isFloat({ min: 0 }).withMessage('时薪必须是非负数'),
+    body('bio').optional().isLength({ max: 1000 }).withMessage('个人简介不能超过1000字符'),
+    body('languages').optional().isArray().withMessage('语言能力必须是数组')
+  ],
+  validateRequest,
+  createLawyer
+);
+
+router.put('/lawyers/:id',
+  adminPermission(['lawyers:write']),
+  logAdminAction,
+  [
+    param('id').isUUID().withMessage('律师ID格式无效'),
+    body('name').optional().isLength({ min: 1, max: 100 }).withMessage('姓名长度必须在1-100字符之间'),
+    body('email').optional().isEmail().withMessage('请输入有效的邮箱地址'),
+    body('phone').optional().isMobilePhone('zh-CN').withMessage('请输入有效的手机号码'),
+    body('specialties').optional().isArray().withMessage('专业领域必须是数组'),
+    body('experience').optional().isInt({ min: 0 }).withMessage('执业年限必须是非负整数'),
+    body('education').optional().isLength({ max: 500 }).withMessage('教育背景不能超过500字符'),
+    body('license_number').optional().isLength({ max: 50 }).withMessage('执业证号不能超过50字符'),
+    body('hourly_rate').optional().isFloat({ min: 0 }).withMessage('时薪必须是非负数'),
+    body('bio').optional().isLength({ max: 1000 }).withMessage('个人简介不能超过1000字符'),
+    body('languages').optional().isArray().withMessage('语言能力必须是数组')
+  ],
+  validateRequest,
+  updateLawyer
 );
 
 // Consultation management routes
